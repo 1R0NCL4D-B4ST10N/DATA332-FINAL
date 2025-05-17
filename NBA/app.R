@@ -1,5 +1,5 @@
 
-setwd("C:/Users/13038/Downloads/NBA_COMBINED")
+setwd("C:/gitAugie/DATA332-FINAL/NBA/NBA_COMBINED")
 
 library(shiny)
 library(tidyverse)
@@ -9,13 +9,29 @@ library(stringr)
 # Load and prep data
 stats <- read_csv("nba_advanced_all_seasons.csv")
 salaries <- read_csv("final_nba_salaries.csv")
+pergamestats <- read_csv("combined_nba_per_game_stats.csv")
 
-# Clean and merge
+# Clean and merge all data
 stats <- stats %>% mutate(Player_clean = tolower(trimws(Player)))
 salaries <- salaries %>% mutate(Player_clean = tolower(trimws(Player)))
+pergamestats <- pergamestats %>% mutate(Player_clean = tolower(trimws(Player)))
 
 combined <- stats %>%
   inner_join(salaries, by = c("Player_clean", "season")) %>%
+  left_join(pergamestats, by = c("Player_clean", "season")) %>%
+  group_by(Player_clean, season) %>%
+  summarise(
+    Player = first(Player.x),       # Use .x if needed — adjust if Player.y is better
+    Tm = first(Tm),
+    Pos = first(Pos),
+    Salary = mean(Salary, na.rm = TRUE),
+    WS = mean(WS, na.rm = TRUE),
+    VORP = mean(VORP, na.rm = TRUE),
+    PTS = mean(PTS, na.rm = TRUE),
+    G = mean(G, na.rm = TRUE),
+    Win_Shares = mean(Win_Shares, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
   mutate(
     Salary_M = Salary / 1e6,
     value_score = (0.6 * WS + 0.4 * VORP) / Salary_M,
@@ -24,9 +40,16 @@ combined <- stats %>%
       Salary_M >= 20 ~ "High ($20M–29M)",
       Salary_M >= 10 ~ "Mid ($10M–19M)",
       TRUE ~ "Low (<$10M)"
+    ),
+    Pos_full = case_when(
+      Pos == "PG" ~ "Point Guard",
+      Pos == "SG" ~ "Shooting Guard",
+      Pos == "SF" ~ "Small Forward",
+      Pos == "PF" ~ "Power Forward",
+      Pos == "C"  ~ "Center",
+      TRUE        ~ "Other"
     )
   )
-
 # UI
 ui <- fluidPage(
   titlePanel("NBA Value Score Explorer (2022–2025)"),
@@ -35,13 +58,43 @@ ui <- fluidPage(
     sidebarPanel(
       selectInput("season", "Season", choices = unique(combined$season), selected = "2024-25"),
       selectInput("tier", "Salary Tier", choices = unique(combined$salary_tier)),
-      sliderInput("numPlayers", "Number of Players to Show", min = 5, max = 30, value = 15)
+      sliderInput("numPlayers", "Number of Players to Show", min = 5, max = 30, value = 15),
+      selectInput("position", "Position",
+                  choices = c("All", "Point Guard", "Shooting Guard", "Small Forward", "Power Forward", "Center"),
+                  selected = "All")
     ),
     
     mainPanel(
-      plotOutput("valuePlot", height = "600px"),
-      br(),
-      dataTableOutput("playerTable")
+      tabsetPanel(
+        tabPanel("Value Score",
+                 plotOutput("valuePlot", height = "600px"),
+                 br(),
+                 dataTableOutput("playerTable")
+        ),
+        tabPanel("Top Scorers",
+                 plotOutput("topScorersPlot", height = "600px"),
+                 br(),
+                 dataTableOutput("scorerTable")
+        ),
+        tabPanel("Most Games Played",
+                 plotOutput("mostGamesPlot", height = "600px"),
+                 br(),
+                 dataTableOutput("gamesTable")
+        ),
+        tabPanel("Value vs Salary", 
+                 plotOutput("valueVsSalaryPlot", height = "600px"),
+                 br(),
+                 dataTableOutput("valueVsSalaryTable")
+        ),
+        
+        tabPanel("Position Boxplot", 
+                 plotOutput("positionBoxplot", height = "600px")
+        ),
+        
+        tabPanel("Team × Position Heatmap", 
+                 plotOutput("heatmapPlot", height = "600px")
+        )
+      )
     )
   )
 )
@@ -51,14 +104,33 @@ server <- function(input, output) {
   
   filtered_data <- reactive({
     combined %>%
-      filter(season == input$season, salary_tier == input$tier) %>%
-      arrange(desc(value_score)) %>%
-      slice_head(n = input$numPlayers) %>%
-      mutate(display_name = str_wrap(Player.x, width = 20))
+      mutate(
+        Pos_full = case_when(
+          Pos == "PG" ~ "Point Guard",
+          Pos == "SG" ~ "Shooting Guard",
+          Pos == "SF" ~ "Small Forward",
+          Pos == "PF" ~ "Power Forward",
+          Pos == "C"  ~ "Center",
+          TRUE        ~ "Other"
+        )
+      ) %>%
+      filter(
+        season == input$season,
+        salary_tier == input$tier,
+        (input$position == "All" | Pos_full == input$position),
+        !is.na(value_score),
+        is.finite(value_score),
+        value_score > 0,
+        value_score < 3,
+        !is.na(Player)
+      ) %>%
+      mutate(display_name = str_wrap(Player, width = 20))
   })
   
   output$valuePlot <- renderPlot({
-    ggplot(filtered_data(), aes(x = reorder(display_name, value_score), y = value_score, fill = salary_tier)) +
+    filtered_data() %>%
+      slice_head(n = input$numPlayers) %>%
+      ggplot(aes(x = reorder(display_name, value_score), y = value_score, fill = Pos_full)) +
       geom_col() +
       geom_text(aes(label = round(value_score, 2)), hjust = -0.1, size = 3) +
       coord_flip() +
@@ -73,10 +145,115 @@ server <- function(input, output) {
   
   output$playerTable <- renderDataTable({
     filtered_data() %>%
-      select(Player = Player.x, Salary_M, WS, VORP, value_score) %>%
-      arrange(desc(value_score))
+      arrange(desc(value_score)) %>%
+      slice_head(n = input$numPlayers) %>%
+      select(Player, Tm, Salary_M, WS, VORP, value_score)
+  })
+  
+  output$topScorersPlot <- renderPlot({
+    top_pts <- filtered_data() %>%
+      arrange(desc(PTS)) %>%
+      slice_head(n = input$numPlayers)
+    
+    ggplot(top_pts, aes(x = reorder(display_name, PTS), y = PTS, fill = Pos_full)) +
+      geom_col() +
+      geom_text(aes(label = round(PTS, 1)), hjust = -0.1, size = 3) +
+      coord_flip() +
+      labs(
+        title = paste("Top", input$numPlayers, input$tier, "Players by Points Per Game -", input$season),
+        x = "",
+        y = "Points Per Game"
+      ) +
+      theme_minimal(base_size = 13)
+  })
+  
+  output$scorerTable <- renderDataTable({
+    filtered_data() %>%
+      arrange(desc(PTS)) %>%
+      slice_head(n = input$numPlayers) %>%
+      select(Player, Pos, Tm, PTS)
+  })
+  
+  output$mostGamesPlot <- renderPlot({
+    top_games <- filtered_data() %>%
+      arrange(desc(G)) %>%
+      slice_head(n = input$numPlayers)
+    
+    ggplot(top_games, aes(x = reorder(display_name, G), y = G, fill = Pos_full)) +
+      geom_col() +
+      geom_text(aes(label = G), hjust = -0.1, size = 3) +
+      coord_flip() +
+      labs(
+        title = paste("Top", input$numPlayers, input$tier, "Players by Games Played -", input$season),
+        x = "",
+        y = "Games Played"
+      ) +
+      theme_minimal(base_size = 13)
+  })
+  
+  output$gamesTable <- renderDataTable({
+    filtered_data() %>%
+      arrange(desc(G)) %>%
+      slice_head(n = input$numPlayers) %>%
+      select(Player, Tm, G, Win_Shares)
+  })
+  
+  output$valueVsSalaryPlot <- renderPlot({
+    filtered_data() %>%
+      slice_head(n = input$numPlayers) %>%
+      ggplot(aes(x = Salary_M, y = value_score, label = Player)) +
+      geom_point(aes(color = Pos_full), size = 3, alpha = 0.7) +
+      labs(
+        title = paste("Value Score vs. Salary (Top", input$numPlayers, "players)"),
+        x = "Salary (in Millions)",
+        y = "Value Score"
+      ) +
+      theme_minimal(base_size = 13)
+  })
+  
+  output$valueVsSalaryTable <- renderDataTable({
+    filtered_data() %>%
+      slice_head(n = input$numPlayers) %>%
+      arrange(desc(value_score)) %>%
+      select(Player, Pos = Pos_full, Tm, Salary_M, value_score)
+  })
+  
+  team_trend_data <- combined %>%
+    group_by(Tm, season) %>%
+    summarise(avg_value = mean(value_score, na.rm = TRUE), .groups = "drop")
+  
+  output$teamTrendPlot <- renderPlot({
+    ggplot(team_trend_data, aes(x = season, y = avg_value, group = Tm, color = Tm)) +
+      geom_line() +
+      labs(title = "Average Value Score per Team Over Time",
+           x = "Season", y = "Average Value Score") +
+      theme_minimal()
+  })
+  
+  output$positionBoxplot <- renderPlot({
+    filtered_data() %>%
+      slice_head(n = input$numPlayers) %>%
+      ggplot(aes(x = Pos_full, y = value_score, fill = Pos_full)) +
+      geom_boxplot() +
+      labs(title = paste("Value Score Distribution by Position (Top", input$numPlayers, "players)" ), y = "Value Score", x = "") +
+      theme_minimal(base_size = 13)
+  })
+  
+  output$heatmapPlot <- renderPlot({
+    heatmap_data <- filtered_data() %>%
+      slice_head(n = input$numPlayers) %>%
+      group_by(Tm, Pos_full) %>%
+      summarise(avg_score = mean(value_score, na.rm = TRUE), .groups = "drop")
+    
+    ggplot(heatmap_data, aes(x = Pos_full, y = Tm, fill = avg_score)) +
+      geom_tile(color = "white") +
+      scale_fill_gradient(low = "lightyellow", high = "red") +
+      labs(title = paste("Avg Value Score by Team and Position (Top", input$numPlayers, "players)"),
+           x = "Position", y = "Team") +
+      theme_minimal()
   })
 }
+
 
 # Run the app
 shinyApp(ui = ui, server = server)
