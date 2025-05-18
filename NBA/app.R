@@ -5,6 +5,8 @@ library(shiny)
 library(tidyverse)
 library(scales)
 library(stringr)
+library(ggimage)
+library(ggtext)
 
 # Load and prep data
 stats <- read_csv("nba_advanced_all_seasons.csv")
@@ -19,9 +21,10 @@ pergamestats <- pergamestats %>% mutate(Player_clean = tolower(trimws(Player)))
 combined <- stats %>%
   inner_join(salaries, by = c("Player_clean", "season")) %>%
   left_join(pergamestats, by = c("Player_clean", "season")) %>%
+  filter(!Tm %in% c("2TM", "3TM")) %>%   # ✅ remove multi-team aggregates
   group_by(Player_clean, season) %>%
   summarise(
-    Player = first(Player.x),       # Use .x if needed — adjust if Player.y is better
+    Player = first(Player.x),
     Tm = first(Tm),
     Pos = first(Pos),
     Salary = mean(Salary, na.rm = TRUE),
@@ -48,7 +51,8 @@ combined <- stats %>%
       Pos == "PF" ~ "Power Forward",
       Pos == "C"  ~ "Center",
       TRUE        ~ "Other"
-    )
+    ),
+    logo_path = paste0("www/logos/", Tm, ".png")
   )
 # UI
 ui <- fluidPage(
@@ -104,16 +108,6 @@ server <- function(input, output) {
   
   filtered_data <- reactive({
     combined %>%
-      mutate(
-        Pos_full = case_when(
-          Pos == "PG" ~ "Point Guard",
-          Pos == "SG" ~ "Shooting Guard",
-          Pos == "SF" ~ "Small Forward",
-          Pos == "PF" ~ "Power Forward",
-          Pos == "C"  ~ "Center",
-          TRUE        ~ "Other"
-        )
-      ) %>%
       filter(
         season == input$season,
         salary_tier == input$tier,
@@ -124,13 +118,20 @@ server <- function(input, output) {
         value_score < 3,
         !is.na(Player)
       ) %>%
-      mutate(display_name = str_wrap(Player, width = 20))
+      mutate(
+        display_name = paste0(
+          "<img src='", logo_path, "' width='20' style='vertical-align:middle;'> ",
+          Player
+        )
+      )
   })
   
+  
   output$valuePlot <- renderPlot({
-    filtered_data() %>%
-      slice_head(n = input$numPlayers) %>%
-      ggplot(aes(x = reorder(display_name, value_score), y = value_score, fill = Pos_full)) +
+    top_players <- filtered_data() %>%
+      slice_head(n = input$numPlayers)
+    
+    ggplot(top_players, aes(x = reorder(display_name, value_score), y = value_score, fill = Pos_full)) +
       geom_col() +
       geom_text(aes(label = round(value_score, 2)), hjust = -0.1, size = 3) +
       coord_flip() +
@@ -140,7 +141,14 @@ server <- function(input, output) {
         y = "Value Score (WS + VORP per $1M)"
       ) +
       theme_minimal(base_size = 13) +
-      scale_y_continuous(labels = label_number(accuracy = 0.1), expand = expansion(mult = c(0, 0.25)))
+      theme(
+        axis.text.y = element_markdown(size = 10),  # ← this does the magic
+        plot.title = element_text(size = 15, face = "bold")
+      ) +
+      scale_y_continuous(
+        labels = scales::label_number(accuracy = 0.1),
+        expand = expansion(mult = c(0, 0.25))
+      )
   })
   
   output$playerTable <- renderDataTable({
@@ -153,7 +161,13 @@ server <- function(input, output) {
   output$topScorersPlot <- renderPlot({
     top_pts <- filtered_data() %>%
       arrange(desc(PTS)) %>%
-      slice_head(n = input$numPlayers)
+      slice_head(n = input$numPlayers) %>%
+      mutate(
+        display_name = paste0(
+          "<img src='", logo_path, "' width='20' style='vertical-align:middle;'> ",
+          Player
+        )
+      )
     
     ggplot(top_pts, aes(x = reorder(display_name, PTS), y = PTS, fill = Pos_full)) +
       geom_col() +
@@ -161,10 +175,10 @@ server <- function(input, output) {
       coord_flip() +
       labs(
         title = paste("Top", input$numPlayers, input$tier, "Players by Points Per Game -", input$season),
-        x = "",
-        y = "Points Per Game"
+        x = "", y = "Points Per Game"
       ) +
-      theme_minimal(base_size = 13)
+      theme_minimal(base_size = 13) +
+      theme(axis.text.y = ggtext::element_markdown())
   })
   
   output$scorerTable <- renderDataTable({
@@ -177,7 +191,13 @@ server <- function(input, output) {
   output$mostGamesPlot <- renderPlot({
     top_games <- filtered_data() %>%
       arrange(desc(G)) %>%
-      slice_head(n = input$numPlayers)
+      slice_head(n = input$numPlayers) %>%
+      mutate(
+        display_name = paste0(
+          "<img src='", logo_path, "' width='20' style='vertical-align:middle;'> ",
+          Player
+        )
+      )
     
     ggplot(top_games, aes(x = reorder(display_name, G), y = G, fill = Pos_full)) +
       geom_col() +
@@ -185,10 +205,10 @@ server <- function(input, output) {
       coord_flip() +
       labs(
         title = paste("Top", input$numPlayers, input$tier, "Players by Games Played -", input$season),
-        x = "",
-        y = "Games Played"
+        x = "", y = "Games Played"
       ) +
-      theme_minimal(base_size = 13)
+      theme_minimal(base_size = 13) +
+      theme(axis.text.y = ggtext::element_markdown())
   })
   
   output$gamesTable <- renderDataTable({
@@ -208,7 +228,11 @@ server <- function(input, output) {
         x = "Salary (in Millions)",
         y = "Value Score"
       ) +
-      theme_minimal(base_size = 13)
+      theme_minimal(base_size = 13) +
+      theme(
+        plot.title = element_text(size = 15, face = "bold"),
+        axis.text.y = element_text(size = 11)
+      )
   })
   
   output$valueVsSalaryTable <- renderDataTable({
@@ -227,7 +251,11 @@ server <- function(input, output) {
       geom_line() +
       labs(title = "Average Value Score per Team Over Time",
            x = "Season", y = "Average Value Score") +
-      theme_minimal()
+      theme_minimal(base_size = 13) +
+      theme(
+        plot.title = element_text(size = 15, face = "bold"),
+        axis.text.y = element_text(size = 11)
+      )
   })
   
   output$positionBoxplot <- renderPlot({
@@ -242,15 +270,29 @@ server <- function(input, output) {
   output$heatmapPlot <- renderPlot({
     heatmap_data <- filtered_data() %>%
       slice_head(n = input$numPlayers) %>%
-      group_by(Tm, Pos_full) %>%
-      summarise(avg_score = mean(value_score, na.rm = TRUE), .groups = "drop")
+      group_by(Tm, Pos_full, logo_path) %>%
+      summarise(avg_score = mean(value_score, na.rm = TRUE), .groups = "drop") %>%
+      mutate(
+        TeamLogo = paste0(
+          "<img src='", logo_path, "' width='20' style='vertical-align:middle;'>"
+        )
+      )
     
-    ggplot(heatmap_data, aes(x = Pos_full, y = Tm, fill = avg_score)) +
+    ggplot(heatmap_data, aes(x = Pos_full, y = TeamLogo, fill = avg_score)) +
       geom_tile(color = "white") +
-      scale_fill_gradient(low = "lightyellow", high = "red") +
-      labs(title = paste("Avg Value Score by Team and Position (Top", input$numPlayers, "players)"),
-           x = "Position", y = "Team") +
-      theme_minimal()
+      scale_fill_gradient(low = "lightyellow", high = "red", na.value = "gray90") +
+      labs(
+        title = paste("Avg Value Score by Team and Position (Top", input$numPlayers, "players)"),
+        x = "Position",
+        y = "Team",
+        fill = "Avg Score"
+      ) +
+      theme_minimal(base_size = 13) +
+      theme(
+        axis.text.y = ggtext::element_markdown(size = 11),
+        plot.title = element_text(size = 15, face = "bold"),
+        panel.grid = element_blank()
+      )
   })
 }
 
