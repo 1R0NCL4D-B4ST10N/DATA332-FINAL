@@ -1,22 +1,26 @@
-
-setwd("C:/gitAugie/DATA332-FINAL/NBA/NBA_COMBINED")
-
 library(shiny)
 library(tidyverse)
 library(scales)
 library(stringr)
 library(ggimage)
 library(ggtext)
+library(RCurl)
 
-# Load and prep data
-stats <- read_csv("nba_advanced_all_seasons.csv")
-salaries <- read_csv("final_nba_salaries.csv")
-pergamestats <- read_csv("combined_nba_per_game_stats.csv")
+read_csv_url <- function(url) {
+  text <- getURL(url, ssl.verifypeer = FALSE, httpheader = c("User-Agent" = "R"))
+  read.csv(text = text, stringsAsFactors = FALSE)
+}
 
-# Clean and merge all data
+stats <- read_csv_url("https://raw.githubusercontent.com/1R0NCL4D-B4ST10N/DATA332-FINAL/main/NBA/NBA_COMBINED/nba_advanced_all_seasons.csv")
+salaries <- read_csv_url("https://raw.githubusercontent.com/1R0NCL4D-B4ST10N/DATA332-FINAL/main/NBA/NBA_COMBINED/final_nba_salaries.csv")
+pergamestats <- read_csv_url("https://raw.githubusercontent.com/1R0NCL4D-B4ST10N/DATA332-FINAL/main/NBA/NBA_COMBINED/combined_nba_per_game_stats.csv")
+
+# Clean and prepare columns
 stats <- stats %>% mutate(Player_clean = tolower(trimws(Player)))
 salaries <- salaries %>% mutate(Player_clean = tolower(trimws(Player)))
-pergamestats <- pergamestats %>% mutate(Player_clean = tolower(trimws(Player)))
+pergamestats <- pergamestats %>%
+  mutate(Player_clean = tolower(trimws(Player))) %>%
+  distinct(Player_clean, season, .keep_all = TRUE)
 
 combined <- stats %>%
   inner_join(salaries, by = c("Player_clean", "season")) %>%
@@ -65,7 +69,8 @@ ui <- fluidPage(
       sliderInput("numPlayers", "Number of Players to Show", min = 5, max = 30, value = 15),
       selectInput("position", "Position",
                   choices = c("All", "Point Guard", "Shooting Guard", "Small Forward", "Power Forward", "Center"),
-                  selected = "All")
+                  selected = "All"),
+      helpText("GitHub Link: https://github.com/1R0NCL4D-B4ST10N/DATA332-FINAL")
     ),
     
     mainPanel(
